@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>Graphe FSTT — Dashboard & Simulation (Mehdi)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <script src="https://unpkg.com/cytoscape@3.24.0/dist/cytoscape.min.js"></script>
+  <style>
+    :root { --panel-width: 360px; --gap: 12px; font-family: Inter, Arial, sans-serif; }
+    body { margin:0; height:100vh; display:flex; gap:var(--gap); }
+    #visual { flex:1; height:100vh; background:#222; position:relative; }
+    #cy { width:100%; height:100%; box-shadow: inset 0 0 0 1px #071018; }
+    #side { width:var(--panel-width); padding:14px; box-sizing:border-box; background:#fff; border-left:1px solid #e6eef6; overflow:auto;}
+    h2{margin:2px 0 8px 0;font-size:16px}
+    .section{margin-bottom:14px}
+    button, select { width:100%; padding:8px; margin-top:6px; box-sizing:border-box; cursor:pointer; }
+    .row { display:flex; gap:8px; }
+    .small { flex:1; }
+    pre { background:#fafafa; border:1px solid #eee; padding:8px; max-height:150px; overflow:auto; font-size:13px; white-space:pre-wrap; }
+    ul { padding-left:18px; margin:6px 0; max-height:120px; overflow:auto; }
+    .badge { display:inline-block; padding:3px 8px; border-radius:999px; background:#eef6ff; font-size:12px; margin-right:6px; }
+    .muted { color:#666; font-size:13px }
+    .highlight { color:#c62828; font-weight:700 }
+  </style>
+</head>
+<body>
+  <div id="visual">
+    <div id="cy"></div>
+  </div>
+
+  <div id="side">
+    <h2>Mehdi — Dashboard & Simulation</h2>
+
+    <div class="section">
+      <div class="muted">Chargement du dataset :</div>
+      <div id="datasetName" class="badge">fstt_data.json</div>
+      <div id="loadStatus" class="muted">En attente...</div>
+    </div>
+
+    <div class="section">
+      <h3>Analyses (Person 2)</h3>
+      <label for="startSelect" class="muted">Point de départ (home)</label>
+      <select id="startSelect"></select>
+      <button id="btn-bfs">BFS — pages atteintes</button>
+      <button id="btn-scc">Détecter cycles (SCC)</button>
+      <button id="btn-isolated">Trouver pages isolées</button>
+      <div style="margin-top:8px">
+        <div class="muted">Résultats :</div>
+        <pre id="analysisOut">—</pre>
+      </div>
+      <button id="btn-export-csv" style="margin-top:8px">Export BFS as CSV</button>
+      <button id="btn-download-png" style="margin-top:8px">Download Graph Image (PNG)</button>
+    </div>
+
+    <div class="section">
+      <h3>Navigation Simulation</h3>
+      <div class="muted">Mode de simulation :</div>
+      <div class="row" style="margin-top:6px">
+        <button id="btn-reset" class="small">Reset</button>
+        <button id="btn-step" class="small">Step</button>
+      </div>
+      <button id="btn-follow-bfs" style="margin-top:8px">Suivre ordre BFS (auto)</button>
+      <div style="margin-top:8px" class="muted">Chemin / Historique :</div>
+      <pre id="navPath">—</pre>
+      <div style="margin-top:8px" class="muted">Instructions :</div>
+      <ul>
+        <li>Clique sur un nœud pour <b>démarrer</b> la navigation (si rien n'est démarré).</li>
+        <li>Si la navigation est déjà démarrée, clique sur une autre page pour la <b>sélectionner comme cible</b> (elle sera surlignée), puis appuie sur <b>Step</b> pour avancer d'un nœud.</li>
+        <li>Utilise <b>Suivre ordre BFS</b> pour voir la visite BFS animée depuis le point de départ.</li>
+      </ul>
+    </div>
+
+    <div class="section">
+      <h3>Infos utiles</h3>
+      <div class="muted">Top hubs (out-degree)</div>
+      <ul id="topHubs"></ul>
+      <div class="muted" style="margin-top:6px">SCCs détectées (cycles → marque en rouge)</div>
+      <ul id="sccList"></ul>
+    </div>
+
+  </div>
+
+<script>
+function safeId(s){ return String(s).replace(/[^a-zA-Z0-9_-]/g,'_'); }
+let rawData = null;
+let cy = null;
+let adj = {};
+let nodes = {};
+let currentPath = [];
+let autoTimer = null;
+let autoplayIndex = 0;
+let bfsOrderForAuto = [];
+let lastClickedTarget = null;
+let currentTargetElem = null;
+
+fetch('../data/fstt_data.json')
+  .then(r => r.json())
+  .then(data => {
+    rawData = data;
+    document.getElementById('loadStatus').textContent = 'Dataset chargé ✓';
+    nodes = data.nodes || {};
+    const rawAdj = data.adjacencyList || {};
+    adj = {};
+    Object.keys(nodes).forEach(k => adj[k] = Array.isArray(rawAdj[k]) ? rawAdj[k].slice() : []);
+    Object.keys(rawAdj).forEach(k => { if(!adj[k]) adj[k] = rawAdj[k].slice(); rawAdj[k].forEach(t=>{ if(!nodes[t]) nodes[t]={name:t,url:''}; }); });
+    initUI();
+    renderGraph();
+  })
+  .catch(err => {
+    document.getElementById('loadStatus').textContent = 'Erreur chargement : ' + err;
+    console.error(err);
+  });
+
+function initUI(){
+  const sel = document.getElementById('startSelect');
+  sel.innerHTML = '';
+  Object.keys(nodes).forEach(k => {
+    const opt = document.createElement('option');
+    opt.value = k; opt.textContent = `${k} — ${nodes[k].name || ''}`;
+    sel.appendChild(opt);
+  });
+
+  document.getElementById('btn-bfs').onclick = ()=> {
+    const start = document.getElementById('startSelect').value;
+    const order = bfs(start);
+    showAnalysis(`BFS depuis ${start} (${nodes[start].name || ''}) — ${order.length} pages atteintes:\n\n` + order.map((id,i)=>`${i+1}. ${id} — ${nodes[id].name||''}`).join('\n'));
+    bfsOrderForAuto = order;
+  };
+
+  document.getElementById('btn-scc').onclick = ()=> {
+    const sccs = tarjanSCC();
+    const cycles = sccs.filter(c => c.length > 1 || (c.length===1 && adj[c[0]] && adj[c[0]].includes(c[0])));
+    markSCCs(sccs);
+    showAnalysis('SCCs (composantes fortement connexes):\n\n' + sccs.map(c=>'['+c.join(', ')+']').join('\n'));
+    renderSCCList(sccs, cycles);
+  };
+
+  document.getElementById('btn-isolated').onclick = ()=> {
+    const isolates = Object.keys(nodes).filter(n => (!adj[n] || adj[n].length===0) && inDegree(n)===0);
+    showAnalysis('Pages isolées (sans liens entrants ni sortants):\n\n' + (isolates.length ? isolates.map(i=>i+' — '+(nodes[i].name||'')).join('\n') : 'Aucune'));
+  };
+
+  document.getElementById('btn-reset').onclick = () => { resetNavigation(); };
+
+  document.getElementById('btn-step').onclick = () => {
+    if(currentPath.length === 0){ alert('Clique d’abord sur un nœud du graphe pour commencer la navigation.'); return; }
+    if(!lastClickedTarget){
+      alert('Sélectionne d’abord une cible (cliquer sur un nœud) différente de la position courante.');
+      return;
+    }
+    if(currentPath[currentPath.length-1] === lastClickedTarget){
+      alert('La cible sélectionnée est la position courante. Choisis une autre cible.');
+      return;
+    }
+    const start = currentPath[currentPath.length-1];
+    const path = shortestPath(start, lastClickedTarget);
+    if(!path || path.length===0){ alert('Aucun chemin trouvé vers la cible sélectionnée.'); return; }
+    if(path.length >= 2){ simulateVisit(path[1]); }
+  };
+
+  document.getElementById('btn-follow-bfs').onclick = () => {
+    const start = document.getElementById('startSelect').value;
+    const order = bfs(start);
+    if(order.length===0){ alert('Aucun nœud atteint'); return; }
+    resetNavigation();
+    autoplayIndex = 0;
+    bfsOrderForAuto = order;
+    if(autoTimer) clearInterval(autoTimer);
+    autoTimer = setInterval(()=>{
+      if(autoplayIndex >= bfsOrderForAuto.length){ clearInterval(autoTimer); autoTimer=null; return; }
+      const nid = bfsOrderForAuto[autoplayIndex++];
+      simulateVisit(nid);
+    }, 700);
+  };
+
+  document.getElementById('btn-export-csv').onclick = () => {
+    const start = document.getElementById('startSelect').value;
+    const order = bfs(start);
+    if(!order.length){ alert('Run BFS first'); return; }
+    const rows = [['order','id','name']];
+    order.forEach((id,i) => rows.push([i+1, id, nodes[id].name || '']));
+    const csv = rows.map(r => r.map(cell => `"${String(cell).replace(/"/g,'""')}"`).join(',')).join('\r\n');
+    const blob = new Blob([csv], {type: 'text/csv;charset=utf-8;'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `bfs_${start}.csv`; document.body.appendChild(a); a.click();
+    setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); }, 1000);
+  };
+
+  document.getElementById('btn-download-png').onclick = () => {
+    if(!cy){ alert('Graph not ready'); return; }
+    // full:true to include entire viewport; bg set for white background
+    const pngData = cy.png({ full: true, bg: '#ffffff', scale: 2 });
+    const a = document.createElement('a');
+    a.href = pngData;
+    a.download = 'fstt_graph.png';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
+  renderTopHubs();
+}
+
+function renderGraph(){
+  const elements = [];
+  Object.keys(nodes).forEach(k=>{
+    elements.push({ data: { id: k, label: nodes[k].name || k } });
+  });
+  Object.keys(adj).forEach(u=>{
+    adj[u].forEach(v=>{
+      elements.push({ data: { id: u + '_' + v, source: u, target: v }});
+    });
+  });
+
+  cy = cytoscape({
+    container: document.getElementById('cy'),
+    elements: elements,
+    style: [
+      { selector: 'node', style: { 'label': 'data(label)', 'text-valign':'center', 'width': 42, 'height':42, 'background-color': '#6a1b9a', 'color':'white', 'font-size': 11, 'text-wrap':'wrap','text-max-width':80 } },
+      { selector: 'edge', style: { 'width': 2, 'target-arrow-shape':'triangle', 'curve-style':'bezier', 'arrow-scale': 0.8, 'line-color':'#bdbdbd', 'target-arrow-color':'#bdbdbd' } },
+      { selector: '.visited', style: { 'background-color': '#2e7d32' } },
+      { selector: '.path', style: { 'background-color': '#ffb300' } },
+      { selector: '.scc', style: { 'background-color': '#8e24aa' } },
+      { selector: '.cycleEdge', style: { 'line-color': '#c62828', 'target-arrow-color': '#c62828' } },
+      { selector: '.target', style: { 'border-width': 4, 'border-color': '#ff9800', 'border-style':'double' } }
+    ],
+    layout: { name: 'cose', animate:true, fit:true }
+  });
+
+  // click event for simulation
+  cy.on('tap', 'node', (evt) => {
+    const node = evt.target;
+    const id = node.id();
+    // set clicked node as lastClickedTarget in all cases
+    lastClickedTarget = id;
+    // Clear previous target visual
+    if(currentTargetElem && currentTargetElem !== id){
+      const prev = cy.getElementById(currentTargetElem);
+      if(prev) prev.removeClass('target');
+    }
+    // show new target highlight
+    const newly = cy.getElementById(id);
+    if(newly) newly.addClass('target');
+    currentTargetElem = id;
+
+    // If navigation not started, treat this click as "visit" to start
+    if(currentPath.length === 0){
+      simulateVisit(id);
+    } else {
+      // Otherwise we only select target (do not navigate immediately)
+      // user can press Step to move towards it
+    }
+  });
+}
+
+function bfs(start){
+  if(!nodes[start]) return [];
+  const q = [start];
+  const seen = new Set([start]);
+  const order = [];
+  while(q.length){
+    const u = q.shift();
+    order.push(u);
+    (adj[u] || []).forEach(v => {
+      if(!seen.has(v)){ seen.add(v); q.push(v); }
+    });
+  }
+  return order;
+}
+
+function tarjanSCC(){
+  const indexMap = {};
+  const lowlink = {};
+  const stack = [];
+  const onstack = new Set();
+  let idx = 0;
+  const sccs = [];
+
+  function strong(v){
+    indexMap[v] = idx; lowlink[v] = idx; idx++;
+    stack.push(v); onstack.add(v);
+    (adj[v] || []).forEach(w => {
+      if(indexMap[w] === undefined){
+        strong(w);
+        lowlink[v] = Math.min(lowlink[v], lowlink[w]);
+      } else if(onstack.has(w)){
+        lowlink[v] = Math.min(lowlink[v], indexMap[w]);
+      }
+    });
+    if(lowlink[v] === indexMap[v]){
+      const comp = [];
+      while(true){
+        const w = stack.pop();
+        onstack.delete(w);
+        comp.push(w);
+        if(w === v) break;
+      }
+      sccs.push(comp);
+    }
+  }
+
+  Object.keys(nodes).forEach(n => { if(indexMap[n] === undefined) strong(n); });
+  return sccs;
+}
+
+function markSCCs(sccs){
+  cy.nodes().removeClass('scc visited path');
+  cy.edges().removeClass('cycleEdge');
+  sccs.forEach(comp => {
+    if(comp.length > 1 || (comp.length===1 && adj[comp[0]] && adj[comp[0]].includes(comp[0]))){
+      comp.forEach(nid => {
+        const no = cy.getElementById(nid);
+        if(no) no.addClass('scc');
+      });
+      for(let i=0;i<comp.length;i++){
+        for(const t of adj[comp[i]] || []){
+          if(comp.includes(t)){
+            const eId = comp[i] + '_' + t;
+            const e = cy.getElementById(eId);
+            if(e) e.addClass('cycleEdge');
+          }
+        }
+      }
+    }
+  });
+}
+
+function renderSCCList(all, cycles){
+  const container = document.getElementById('sccList');
+  container.innerHTML = '';
+  all.forEach(comp=>{
+    const li = document.createElement('li');
+    li.textContent = '['+comp.join(', ')+']';
+    container.appendChild(li);
+  });
+  if(cycles && cycles.length){
+    document.getElementById('analysisOut').textContent = `Cycles trouvés: ${cycles.length}\n\n` + cycles.map(c=>'['+c.join(', ')+']').join('\n');
+  }
+}
+
+function inDegree(node){
+  let cnt = 0;
+  Object.keys(adj).forEach(u => { if((adj[u]||[]).includes(node)) cnt++; });
+  return cnt;
+}
+
+function renderTopHubs(){
+  const arr = Object.keys(nodes).map(nid => ({id:nid, out:(adj[nid]||[]).length, in: inDegree(nid), name: nodes[nid].name||''}));
+  arr.sort((a,b)=>b.out - a.out);
+  const top = arr.slice(0,6);
+  const ul = document.getElementById('topHubs');
+  ul.innerHTML = '';
+  top.forEach(x=>{
+    const li = document.createElement('li');
+    li.textContent = `${x.id} (${x.name}) — out=${x.out}, in=${x.in}`;
+    ul.appendChild(li);
+  });
+}
+
+function showAnalysis(text){
+  document.getElementById('analysisOut').textContent = text;
+}
+
+function resetNavigation(){
+  currentPath = [];
+  updateNavUI();
+  cy.nodes().removeClass('visited path target');
+  cy.edges().removeClass('cycleEdge');
+  lastClickedTarget = null;
+  currentTargetElem = null;
+  if(autoTimer){ clearInterval(autoTimer); autoTimer=null; }
+}
+
+function simulateVisit(nodeId){
+  // remove target highlight from visited node (it becomes current)
+  const t = cy.getElementById(nodeId);
+  if(t) t.removeClass('target');
+
+  if(currentPath.length > 0){
+    const prev = currentPath[currentPath.length-1];
+    const e = cy.getElementById(prev + '_' + nodeId);
+    if(e) e.addClass('cycleEdge');
+  }
+  currentPath.push(nodeId);
+  updateNavUI();
+  cy.nodes().removeClass('path');
+  currentPath.forEach((nid,i)=>{
+    const n = cy.getElementById(nid);
+    if(n){
+      if(i === currentPath.length-1) n.addClass('visited');
+      else n.addClass('path');
+    }
+  });
+  const el = cy.getElementById(nodeId);
+  if(el) cy.animate({ center: { eles: el }, duration: 300 });
+}
+
+function shortestPath(start, target){
+  if(start === target) return [start];
+  const q = [start];
+  const prev = {};
+  const seen = new Set([start]);
+  while(q.length){
+    const u = q.shift();
+    for(const v of adj[u] || []){
+      if(!seen.has(v)){
+        seen.add(v);
+        prev[v] = u;
+        if(v === target){
+          const path = [v];
+          while(path[0] !== start){ path.unshift(prev[path[0]]); }
+          return path;
+        }
+        q.push(v);
+      }
+    }
+  }
+  return null;
+}
+
+function updateNavUI(){
+  document.getElementById('navPath').textContent = currentPath.length ? currentPath.map((id,i)=>`${i+1}. ${id} — ${nodes[id].name||''}`).join('\n') : '—';
+}
+
+window._fstt = { adj, nodes, bfs, tarjanSCC, shortestPath, simulateVisit, resetNavigation };
+</script>
+</body>
+</html>
