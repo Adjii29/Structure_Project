@@ -128,7 +128,7 @@ function initUI(){
   };
 
   document.getElementById('btn-scc').onclick = ()=> {
-    const sccs = tarjanSCC();
+    const sccs = DFS();
     const cycles = sccs.filter(c => c.length > 1 || (c.length===1 && adj[c[0]] && adj[c[0]].includes(c[0])));
     markSCCs(sccs);
     showAnalysis('SCCs (composantes fortement connexes):\n\n' + sccs.map(c=>'['+c.join(', ')+']').join('\n'));
@@ -269,7 +269,7 @@ function bfs(start){
   return order;
 }
 
-function tarjanSCC(){
+function DFS(){
   const indexMap = {};
   const lowlink = {};
   const stack = [];
@@ -423,7 +423,7 @@ function updateNavUI(){
   document.getElementById('navPath').textContent = currentPath.length ? currentPath.map((id,i)=>`${i+1}. ${id} — ${nodes[id].name||''}`).join('\n') : '—';
 }
 
-window._fstt = { adj, nodes, bfs, tarjanSCC, shortestPath, simulateVisit, resetNavigation };
+window._fstt = { adj, nodes, bfs, DFS, shortestPath, simulateVisit, resetNavigation };
 </script>
 </body>
 </html>
