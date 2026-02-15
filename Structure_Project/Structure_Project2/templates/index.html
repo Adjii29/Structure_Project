@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>Graphe FSTT — Dashboard & Simulation (Mehdi)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <script src="https://unpkg.com/cytoscape@3.24.0/dist/cytoscape.min.js"></script>
+  <style>
+    :root { --panel-width: 360px; --gap: 12px; font-family: Inter, Arial, sans-serif; }
+    body { margin:0; height:100vh; display:flex; gap:var(--gap); }
+    #visual { flex:1; height:100vh; background:#222; position:relative; }
+    #cy { width:100%; height:100%; box-shadow: inset 0 0 0 1px #071018; }
+    #side { width:var(--panel-width); padding:14px; box-sizing:border-box; background:#fff; border-left:1px solid #e6eef6; overflow:auto;}
+    h2{margin:2px 0 8px 0;font-size:16px}
+    .section{margin-bottom:14px}
+    button, select { width:100%; padding:8px; margin-top:6px; box-sizing:border-box; cursor:pointer; }
+    .row { display:flex; gap:8px; }
+    .small { flex:1; }
+    pre { background:#fafafa; border:1px solid #eee; padding:8px; max-height:150px; overflow:auto; font-size:13px; white-space:pre-wrap; }
+    ul { padding-left:18px; margin:6px 0; max-height:120px; overflow:auto; }
+    .badge { display:inline-block; padding:3px 8px; border-radius:999px; background:#eef6ff; font-size:12px; margin-right:6px; }
+    .muted { color:#666; font-size:13px }
+    
+    /* ANIMATIONS & STATES */
+  @keyframes blink {
+  0%   { background-color: #6a1b9a !important; } /* Starting Purple */
+  50%  { background-color: #ffeb3b !important; } /* Bright Yellow Flash */
+  100% { background-color: #2e7d32 !important; } /* Ending Green */
+}
+
+.blinking {
+  /* We force the animation to override everything */
+  animation: blink 0.8s ease-in-out !important;
+  z-index: 9999 !important;
+}
+  </style>
+</head>
+<body>
+  <div id="visual">
+    <div id="cy"></div>
+  </div>
+
+  <div id="side">
+    <h2>Mehdi — Dashboard & Simulation</h2>
+
+    <div class="section">
+      <div class="muted">Chargement du dataset :</div>
+      <div id="datasetName" class="badge">fstt_data.json</div>
+      <div id="loadStatus" class="muted">En attente...</div>
+    </div>
+
+    <div class="section">
+      <h3>Analyses (Person 2)</h3>
+      <label for="startSelect" class="muted">Point de départ (home)</label>
+      <select id="startSelect"></select>
+      <button id="btn-bfs">BFS — pages atteintes</button>
+      <button id="btn-scc">Détecter cycles (SCC)</button>
+      <button id="btn-isolated">Trouver pages isolées</button>
+      <div style="margin-top:8px">
+        <div class="muted">Résultats :</div>
+        <pre id="analysisOut">—</pre>
+      </div>
+      <button id="btn-export-csv" style="margin-top:8px">Export BFS as CSV</button>
+      <button id="btn-download-png" style="margin-top:8px">Download Graph Image (PNG)</button>
+    </div>
+
+    <div class="section">
+      <h3>Navigation Simulation</h3>
+      <div class="muted">Mode de simulation :</div>
+      <div class="row" style="margin-top:6px">
+        <button id="btn-reset" class="small">Reset</button>
+        <button id="btn-step" class="small">Step</button>
+      </div>
+      <button id="btn-follow-bfs" style="margin-top:8px">Suivre ordre BFS (auto)</button>
+      <div style="margin-top:8px" class="muted">Chemin / Historique :</div>
+      <pre id="navPath">—</pre>
+    </div>
+
+   <div class="section">
+        <h3>Infos utiles</h3>
+        <div class="muted">Top pages (In/Out Degree)</div>
+        <ul id="topHubs"></ul>
+        <div class="muted" style="margin-top:6px">SCCs détectées</div>
+        <ul id="sccList"></ul>
+    </div>
+  </div>
+
+<script>
+let cy = null;
+let nodes = {};
+let adj = {};
+let currentPath = [];
+let autoTimer = null;
+let bfsOrderForAuto = [];
+let lastClickedTarget = null;
+let currentTargetElem = null;
+
+// DATA LOADING
+fetch('/static/data/fstt_data.json')
+  .then(r => r.json())
+  .then(data => {
+    document.getElementById('loadStatus').textContent = 'Dataset chargé ✓';
+    nodes = data.nodes || {};
+    adj = data.adjacencyList || {};
+    initUI();
+    renderGraph();
+    renderTopHubs();
+  });
+
+function initUI(){
+  const sel = document.getElementById('startSelect');
+  sel.innerHTML = '';
+  Object.keys(nodes).forEach(k => {
+    const opt = document.createElement('option');
+    opt.value = k; opt.textContent = `${k} — ${nodes[k].name || ''}`;
+    sel.appendChild(opt);
+  });
+
+  document.getElementById('btn-bfs').onclick = ()=> {
+    const start = document.getElementById('startSelect').value;
+    fetch(`/run-bfs?start=${start}`)
+      .then(r => r.json())
+      .then(data => {
+        bfsOrderForAuto = data.order;
+        showAnalysis(`BFS depuis ${start} — ${bfsOrderForAuto.length} pages atteintes.`);
+      });
+  };
+
+  document.getElementById('btn-scc').onclick = ()=> {
+    fetch('/get-cycles').then(r => r.json()).then(data => {
+      markSCCs(data.cycles);
+      renderSCCList(data.cycles);
+    });
+  };
+
+  document.getElementById('btn-reset').onclick = () => resetNavigation();
+
+  document.getElementById('btn-step').onclick = () => {
+    if(currentPath.length === 0) return alert('Clique d’abord sur un nœud.');
+    if(!lastClickedTarget || currentPath[currentPath.length-1] === lastClickedTarget) return alert('Sélectionne une cible.');
+    const start = currentPath[currentPath.length-1];
+    const path = findShortestPath(start, lastClickedTarget);
+    if(path && path.length >= 2) simulateVisit(path[1]);
+  };
+
+  document.getElementById('btn-follow-bfs').onclick = () => {
+    if(!bfsOrderForAuto.length) return alert('Lancez le BFS d’abord.');
+    resetNavigation();
+    let idx = 0;
+    autoTimer = setInterval(()=>{
+      if(idx >= bfsOrderForAuto.length) return clearInterval(autoTimer);
+      simulateVisit(bfsOrderForAuto[idx++]);
+    }, 1500); // 1.5s interval for clarity
+  };
+}
+
+function renderGraph(){
+  const elements = [];
+  Object.keys(nodes).forEach(k=> elements.push({ data: { id: k, label: nodes[k].name || k } }));
+  Object.keys(adj).forEach(u=> {
+    adj[u].forEach(v=> elements.push({ data: { id: u + '_' + v, source: u, target: v }}));
+  });
+
+  cy = cytoscape({
+    container: document.getElementById('cy'),
+    elements: elements,
+    style: [
+      { selector: 'node', style: { 'label': 'data(label)', 'text-valign':'center', 'width': 45, 'height':45, 'background-color': '#6a1b9a', 'color':'white', 'font-size': 10, 'text-wrap':'wrap','text-max-width':80 } },
+      { selector: 'edge', style: { 'width': 2, 'target-arrow-shape':'triangle', 'curve-style':'bezier', 'line-color':'#bdbdbd', 'target-arrow-color':'#bdbdbd' } },
+      { selector: '.visited', style: { 'background-color': '#2e7d32' } },
+      { selector: '.cycleEdge', style: { 'line-color': '#c62828', 'target-arrow-color': '#c62828', 'width': 3 } },
+      { selector: '.target', style: { 'border-width': 4, 'border-color': '#ff9800', 'border-style':'double' } }
+    ],
+    layout: { name: 'cose', animate: false, randomize: false, fit: true }
+  });
+
+  cy.on('tap', 'node', (evt) => {
+    const id = evt.target.id();
+    if(currentTargetElem) cy.getElementById(currentTargetElem).removeClass('target');
+    evt.target.addClass('target');
+    lastClickedTarget = currentTargetElem = id;
+    if(currentPath.length === 0) simulateVisit(id);
+  });
+}
+
+function simulateVisit(nodeId) {
+  const n = cy.getElementById(nodeId);
+  if (!n) return;
+
+  n.removeClass('target');
+
+  // Clear previous simulation red arrow (keep current clean)
+  cy.edges('.cycleEdge').removeClass('cycleEdge');
+
+  if (currentPath.length > 0) {
+    const prevId = currentPath[currentPath.length - 1];
+    const edge = cy.getElementById(prevId + '_' + nodeId);
+    if (edge) edge.addClass('cycleEdge');
+  }
+
+  currentPath.push(nodeId);
+  updateNavUI();
+
+  // Reset states to force animation trigger
+  n.removeClass('visited blinking'); 
+  setTimeout(() => {
+    n.addClass('blinking');
+    setTimeout(() => {
+      n.removeClass('blinking');
+      n.addClass('visited');
+    }, 800);
+  }, 50);
+
+  cy.animate({ center: { eles: n }, duration: 400 });
+}
+
+function resetNavigation(){
+  if(autoTimer) clearInterval(autoTimer);
+  autoTimer = null;
+  currentPath = [];
+  lastClickedTarget = null;
+  currentTargetElem = null;
+  cy.nodes().removeClass('visited target blinking');
+  cy.edges().removeClass('cycleEdge');
+  updateNavUI();
+  document.getElementById('analysisOut').textContent = '—';
+}
+
+function findShortestPath(start, target) {
+  let q = [[start]];
+  let visited = new Set([start]);
+  while(q.length) {
+    let path = q.shift();
+    let node = path[path.length-1];
+    if(node === target) return path;
+    for(let neighbor of (adj[node] || [])) {
+      if(!visited.has(neighbor)) {
+        visited.add(neighbor);
+        q.push([...path, neighbor]);
+      }
+    }
+  }
+  return null;
+}
+
+function updateNavUI(){
+  document.getElementById('navPath').textContent = currentPath.length ? currentPath.map(id=>`${id} — ${nodes[id].name||''}`).join('\n') : '—';
+}
+
+function markSCCs(cycles){
+  cy.edges().removeClass('cycleEdge');
+  cycles.forEach(comp => {
+    if(comp.length > 1) {
+      comp.forEach(u => {
+        comp.forEach(v => {
+          const edge = cy.getElementById(u + '_' + v);
+          if(edge) edge.addClass('cycleEdge');
+        });
+      });
+    }
+  });
+}
+
+function renderSCCList(cycles){
+  const container = document.getElementById('sccList');
+  container.innerHTML = '';
+  cycles.filter(c => c.length > 1).forEach(comp => {
+    const li = document.createElement('li');
+    li.textContent = '['+comp.join(', ')+']';
+    container.appendChild(li);
+  });
+}
+
+function renderTopHubs(){
+  fetch('/get-stats').then(r=>r.json()).then(stats => {
+    // We map both in and out degrees from the stats object
+    const arr = Object.keys(stats).map(id => ({
+      id, 
+      out: stats[id].out_degree, 
+      in: stats[id].in_degree, 
+      name: stats[id].name || id
+    }));
+
+    // Sort by IN-degree (most linked-to pages) for better analysis
+    arr.sort((a,b) => b.in - a.in);
+
+    const ul = document.getElementById('topHubs');
+    ul.innerHTML = '';
+    
+    // Display the top 6 most important pages
+    arr.slice(0,6).forEach(x => {
+      const li = document.createElement('li');
+      // Using a template literal to show both metrics clearly
+      li.innerHTML = `<b>${x.name}</b> <br> <span class="muted">Entrants: ${x.in} | Sortants: ${x.out}</span>`;
+      li.style.marginBottom = "8px"; // Adding a little space for readability
+      ul.appendChild(li);
+    });
+  });
+}
+
+function showAnalysis(text){ document.getElementById('analysisOut').textContent = text; }
+</script>
+</body>
+</html>
