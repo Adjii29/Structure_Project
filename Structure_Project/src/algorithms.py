@@ -4,7 +4,7 @@ class GraphAlgorithms(GraphModeling):
     def bfs(self, start_node):
         """
         Explore la connectivité pour trouver toutes les pages accessibles.
-        Utile pour identifier les 'Pages Isolées' (Personne 4).
+        Utile pour identifier les 'Pages Isolées'
         """
         visited = set()
         queue = [start_node]
