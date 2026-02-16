@@ -6,6 +6,12 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <script src="https://unpkg.com/cytoscape@3.24.0/dist/cytoscape.min.js"></script>
   <style>
+    .isolated { 
+  background-color: #ff5722 !important; 
+  border-width: 3px; 
+  border-color: #d32f2f; 
+  border-style: dashed;
+}
     :root { --panel-width: 360px; --gap: 12px; font-family: Inter, Arial, sans-serif; }
     body { margin:0; height:100vh; display:flex; gap:var(--gap); }
     #visual { flex:1; height:100vh; background:#222; position:relative; }
@@ -125,6 +131,92 @@ function initUI(){
         showAnalysis(`BFS depuis ${start} — ${bfsOrderForAuto.length} pages atteintes.`);
       });
   };
+
+
+  // change 2.3
+
+document.getElementById('btn-isolated').onclick = () => {
+  const isolated = findIsolatedPages();
+  if (isolated.length === 0) {
+    showAnalysis('Aucune page isolée trouvée.');
+  } else {
+    const list = isolated.map(id => `${id} — ${nodes[id].name || ''}`).join('\n');
+    showAnalysis(`${isolated.length} page(s) isolée(s) :\n${list}`);
+    
+    // Highlight isolated nodes on the graph
+    cy.nodes().removeClass('isolated');
+    isolated.forEach(id => {
+      cy.getElementById(id).addClass('isolated');
+    });
+  }
+};
+
+document.getElementById('btn-export-csv').onclick = () => {
+  if (!bfsOrderForAuto.length) {
+    return alert('Lancez le BFS d\'abord pour avoir des données à exporter.');
+  }
+  
+  // Create CSV content
+  let csv = 'ID,Name,URL\n';
+  bfsOrderForAuto.forEach(id => {
+    const node = nodes[id];
+    const name = (node.name || '').replace(/"/g, '""'); // Escape quotes
+    const url = (node.url || '').replace(/"/g, '""');
+    csv += `"${id}","${name}","${url}"\n`;
+  });
+  
+  // Download CSV
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = 'bfs_results.csv';
+  link.click();
+  
+  showAnalysis(`CSV exporté avec ${bfsOrderForAuto.length} pages.`);
+};
+
+document.getElementById('btn-download-png').onclick = () => {
+  const png = cy.png({
+    output: 'blob',
+    bg: '#222',
+    full: true,
+    scale: 2 // Higher quality
+  });
+  
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(png);
+  link.download = 'fstt_graph.png';
+  link.click();
+  
+  showAnalysis('Image PNG téléchargée ✓');
+};
+
+// Helper function to find isolated pages (add this outside initUI, at the same level as other functions)
+function findIsolatedPages() {
+  const isolated = [];
+  const allNodes = Object.keys(nodes);
+  
+  allNodes.forEach(nodeId => {
+    // Check if node has no outgoing edges
+    const hasOutgoing = adj[nodeId] && adj[nodeId].length > 0;
+    
+    // Check if node has no incoming edges
+    let hasIncoming = false;
+    for (let source in adj) {
+      if (adj[source].includes(nodeId)) {
+        hasIncoming = true;
+        break;
+      }
+    }
+    
+    // If no incoming AND no outgoing, it's isolated
+    if (!hasOutgoing && !hasIncoming) {
+      isolated.push(nodeId);
+    }
+  });
+  
+  return isolated;
+}
 
   document.getElementById('btn-scc').onclick = ()=> {
     fetch('/get-cycles').then(r => r.json()).then(data => {
