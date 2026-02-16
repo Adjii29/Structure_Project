@@ -135,10 +135,42 @@ function initUI(){
     renderSCCList(sccs, cycles);
   };
 
-  document.getElementById('btn-isolated').onclick = ()=> {
-    const isolates = Object.keys(nodes).filter(n => (!adj[n] || adj[n].length===0) && inDegree(n)===0);
-    showAnalysis('Pages isolées (sans liens entrants ni sortants):\n\n' + (isolates.length ? isolates.map(i=>i+' — '+(nodes[i].name||'')).join('\n') : 'Aucune'));
-  };
+ document.getElementById('btn-isolated').onclick = () => {
+    // 1. Identify all node IDs
+    const allNodeIds = Object.keys(nodes);
+    
+    // 2. Find nodes with NO outgoing links (out-degree = 0)
+    // 3. Find nodes with NO incoming links (in-degree = 0)
+    const isolates = allNodeIds.filter(id => {
+        const outDegree = (adj[id] || []).length;
+        
+        // Calculate in-degree manually from the adjacency list
+        let inDegree = 0;
+        allNodeIds.forEach(u => {
+            if ((adj[u] || []).includes(id)) inDegree++;
+        });
+
+        return outDegree === 0 && inDegree === 0;
+    });
+
+    // 4. Format the result text
+    let resultText = "--- Pages Isolées détectées ---\n\n";
+    if (isolates.length > 0) {
+        resultText += isolates.map(id => `• ${id} : ${nodes[id].name || 'Sans nom'}`).join('\n');
+        resultText += `\n\nTotal: ${isolates.length} page(s) sans aucun lien.`;
+        
+        // Visual cue: Highlight them on the graph
+        cy.nodes().removeClass('target');
+        isolates.forEach(id => {
+            const n = cy.getElementById(id);
+            if(n) n.addClass('target'); // Reusing 'target' style to make them pop
+        });
+    } else {
+        resultText += "Aucune page isolée trouvée. Le graphe est entièrement connecté.";
+    }
+
+    showAnalysis(resultText);
+};
 
   document.getElementById('btn-reset').onclick = () => { resetNavigation(); };
 

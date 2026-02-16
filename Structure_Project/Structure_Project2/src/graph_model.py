@@ -18,7 +18,7 @@ class GraphModeling:
             print("Erreur : Fichier data/fstt_data.json introuvable.")
 
     def get_successors(self, node_id):
-        """Donne les voisins pour les algorithmes d'Adjii [cite: 19]"""
+        """Donne les voisins pour"""
         return self.adj_list.get(node_id, [])
 
     def display(self):

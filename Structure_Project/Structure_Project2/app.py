@@ -20,13 +20,13 @@ def run_bfs():
 
 
 @app.route('/get-stats')
-def get_stats():
+def get_stats(): #Gets central pages
     # We call the method from algorithms.py i
     stats = fstt.get_centrality_stats() 
     return jsonify(stats)
 
 @app.route('/get-cycles')
-def get_cycles():
+def get_cycles(): #functions to get cycles
     cycles = fstt.find_all_cycles()
     return jsonify({"cycles": cycles})
 

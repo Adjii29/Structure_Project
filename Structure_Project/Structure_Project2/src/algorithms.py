@@ -2,12 +2,9 @@ from .graph_model import GraphModeling
 
 class GraphAlgorithms(GraphModeling):
     
-    # --- 1. REACHABILITY & ISOLATED PAGES (BFS) ---
+    # --- 1. REACHABILITY & ISOLATED PAGES (BFS) Uses QUEUES(PILES)---
     def get_reachability_report(self, start_node="P0"):
-        """
-        Returns a detailed report of reachable vs isolated pages.
-        Similar to the 'Trouver pages isolées' button in HTML.
-        """
+       
         visited = set()
         order = [] # To keep track of the order pages were found
         queue = [start_node]
@@ -32,7 +29,7 @@ class GraphAlgorithms(GraphModeling):
             "bfs_order": order
         }
 
-    # --- 2. CYCLE DETECTION (Advanced DFS / Tarjan) ---
+    # --- 2. CYCLE DETECTION (Advanced DFS / Tarjan) Uses Stacks(FILES)---
     def find_all_cycles(self):
         """
         Implementation of Tarjan's algorithm to find Strongly Connected Components (SCCs).
